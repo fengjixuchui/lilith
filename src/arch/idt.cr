@@ -40,7 +40,7 @@ rdx, rcx, rbx, rax : UInt64
       # Interrupt number
       int_no : UInt64
       # Pushed by the processor automatically.
-      rip, cs, rflags, userrsp, ss : UInt64
+      rip, cs, rflags, rsp, ss : UInt64
     end
 
     struct ExceptionRegisters
@@ -52,7 +52,7 @@ rdx, rcx, rbx, rax : UInt64
       # Interrupt number
       int_no, errcode : UInt64
       # Pushed by the processor automatically.
-      rip, cs, rflags, userrsp, ss : UInt64
+      rip, cs, rflags, rsp, ss : UInt64
     end
   end
 
@@ -77,6 +77,12 @@ rdx, rcx, rbx, rax : UInt64
         init_idt_entry {{ i }}, KERNEL_CODE_SEGMENT,
           (->Kernel.kcpuex{{ i.id }}).pointer.address,
           INTERRUPT_GATE
+      {% end %}
+    {% else %}
+      {% for i in 0..31 %}
+        init_idt_entry {{ i }}, 0,
+          0x0u64,
+          0x0
       {% end %}
     {% end %}
 
@@ -155,16 +161,16 @@ rdx, rcx, rbx, rax : UInt64
     abort "IF is set" if (check & 0x200) != 0
   end
 
-  @@last_rsp = 0u64
-  class_property last_rsp
+  @@last_registers = Pointer(Idt::Data::Registers).null
+  class_getter last_registers
 
   @@switch_processes = false
   class_property switch_processes
 
   def handle(frame : Idt::Data::Registers*)
     @@status_mask = true
+    @@last_registers = frame
 
-    @@last_rsp = frame.value.userrsp
     PIC.eoi frame.value.int_no
 
     if @@irq_handlers[frame.value.int_no].pointer.null?
@@ -189,11 +195,13 @@ rdx, rcx, rbx, rax : UInt64
     end
 
     @@status_mask = false
+    @@last_registers = Pointer(Idt::Data::Registers).null
   end
 
   def halt_processor
     GC.non_stw_cycle
     @@status_mask = false
+    @@last_registers = Pointer(Idt::Data::Registers).null
     rsp = Kernel.int_stack_end
     asm("mov $0, %rsp
           mov %rsp, %rbp
@@ -218,7 +226,7 @@ private def dump_frame(frame : Idt::Data::ExceptionRegisters*)
                  "r15", "r14", "r13", "r12", "r11", "r10", "r9", "r8",
                  "rdx", "rcx", "rbx", "rax",
                  "int_no", "errcode",
-                 "rip", "cs", "rflags", "userrsp", "ss",
+                 "rip", "cs", "rflags", "rsp", "ss",
                ] %}
     Serial.print {{ id }}, "="
     frame.value.{{ id.id }}.to_s Serial, 16

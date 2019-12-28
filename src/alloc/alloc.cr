@@ -498,7 +498,7 @@ module Allocator
     private def alloc_page(addr)
       @@pages_allocated += 1
       if process = Multiprocessing::Scheduler.current_process
-        if process.kernel_process? && !Syscall.locked
+        if process.kernel_process? && !Syscall.locked?
           return Paging.alloc_page_pg_drv addr, true, false
         end
       end

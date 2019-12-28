@@ -328,7 +328,7 @@ module Multiprocessing
     # new register frame for multitasking
     def new_frame
       frame = Idt::Data::Registers.new
-      frame.userrsp = @initial_sp
+      frame.rsp = @initial_sp
       frame.rip = @initial_ip
       if kernel_process?
         frame.rflags = KERNEL_RFLAGS
@@ -369,7 +369,7 @@ module Multiprocessing
       # setup frame for waking up
       if kernel_process?
         frame.rip = syscall_frame.value.rcx
-        frame.userrsp = syscall_frame.value.rsp
+        frame.rsp = syscall_frame.value.rsp
 
         frame.rflags = frame.r11
         frame.cs = KERNEL_CS_SEGMENT
@@ -383,14 +383,14 @@ module Multiprocessing
           frame.ds = USER_DS64_SEGMENT
 
           frame.rip = syscall_frame.value.rcx
-          frame.userrsp = syscall_frame.value.rsp
+          frame.rsp = syscall_frame.value.rsp
         else
           frame.cs = USER_CS_SEGMENT
           frame.ss = USER_DS_SEGMENT
           frame.ds = USER_DS_SEGMENT
 
           frame.rip = Pointer(UInt32).new(syscall_frame.value.rcx).value
-          frame.userrsp = syscall_frame.value.rcx & 0xFFFF_FFFFu64
+          frame.rsp = syscall_frame.value.rcx & 0xFFFF_FFFFu64
         end
         # Serial.print name, " save: ",Pointer(Void).new(frame.rip), '\n'
       end

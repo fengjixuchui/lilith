@@ -170,58 +170,106 @@ module GC
   end
 
   private def scan_registers
-    {% for register in ["rbx", "r12", "r13", "r14", "r15"] %}
-      ptr = Pointer(Void).null
-      asm("" : {{ "={#{register.id}}" }}(ptr))
-      if Allocator.contains_ptr? ptr
-        push_gray ptr
+    {% if flag?(:kernel) %}
+      {% for register in ["rax", "rbx", "rcx", "rdx",
+                          "r8", "r9", "r10", "r11", "rsi", "rdi",
+                          "r12", "r13", "r14", "r15"] %}
+        ptr = Pointer(Void).null
+        asm("" : {{ "={#{register.id}}" }}(ptr))
+        if Allocator.contains_ptr? ptr
+          push_gray ptr
+        end
+      {% end %}
+      unless Syscall.last_registers.null?
+        {% for register in ["rax", "rbx", "rcx", "rdx",
+                            "r8", "r9", "r10", "r11", "rsi", "rdi",
+                            "r12", "r13", "r14", "r15"] %}
+          ptr = Pointer(Void).new(Syscall.last_registers.value.{{ register.id }})
+          if Allocator.contains_ptr? ptr
+            push_gray ptr
+          end
+        {% end %}
       end
+      unless Idt.last_registers.null?
+        {% for register in ["rax", "rbx", "rcx", "rdx",
+                            "r8", "r9", "r10", "r11", "rsi", "rdi",
+                            "r12", "r13", "r14", "r15"] %}
+          ptr = Pointer(Void).new(Idt.last_registers.value.{{ register.id }})
+          if Allocator.contains_ptr? ptr
+            push_gray ptr
+          end
+        {% end %}
+      end
+    {% else %}
+      {% for register in ["rbx", "r12", "r13", "r14", "r15"] %}
+        ptr = Pointer(Void).null
+        asm("" : {{ "={#{register.id}}" }}(ptr))
+        if Allocator.contains_ptr? ptr
+          push_gray ptr
+        end
+      {% end %}
     {% end %}
+  end
+
+  private def conservative_scan(from : UInt64, to : UInt64)
+    i = from
+    while i < to
+      root_ptr = Pointer(Void*).new(i).value
+      if Allocator.contains_ptr? root_ptr
+        push_gray root_ptr
+      end
+      i += sizeof(Void*)
+    end
   end
 
   private def scan_stack
     sp = 0u64
     asm("" : "={rsp}"(sp))
     {% if flag?(:kernel) %}
+      # FIXME: this is VERY dirty! might wanna refactor this once we redesign syscalls
+      Serial.print "sp: ", Pointer(Void).new(sp), '\n'
+      Serial.print Kernel.int_stack_start, Kernel.int_stack_end, '\n'
+      Serial.print @@stack_start, @@stack_end, '\n'
       if Kernel.int_stack_start.address <= sp <= Kernel.int_stack_end.address
+        # we are currently in an interrupt
         # scan interrupt stack
-        while sp < Kernel.int_stack_end.address
-          root_ptr = Pointer(Void*).new(sp).value
-          if Allocator.contains_ptr? root_ptr
-            push_gray root_ptr
+        conservative_scan(sp, Kernel.int_stack_end.address)
+        Serial.print Pointer(Void).new(Idt.last_registers.value.rsp), '\n'
+        last_rsp = Idt.last_registers.value.rsp
+        if @@stack_start.address <= last_rsp <= @@stack_end.address
+          # interrupt came from a syscall/kernel code
+          conservative_scan(Idt.last_registers.value.rsp, @@stack_end.address)
+          if Multiprocessing::KERNEL_INITIAL <= Syscall.last_registers.value.rsp <= Multiprocessing::KERNEL_STACK_INITIAL
+            # syscall came from kernel thread stack
+            conservative_scan(Syscall.last_registers.value.rsp, Multiprocessing::KERNEL_STACK_INITIAL)
           end
-          sp += sizeof(Void*)
+        elsif Multiprocessing::KERNEL_INITIAL <= last_rsp <= Multiprocessing::KERNEL_STACK_INITIAL
+          # interrupt came from kernel thread stack
+          conservative_scan(last_rsp, Multiprocessing::KERNEL_STACK_INITIAL)
+        else
+          abort "unhandled interrupt pointer"
         end
-        # scan kernel stack
-        if @@stack_start.address <= Idt.last_rsp <= @@stack_end.address
-          sp = Idt.last_rsp
-          while sp < @@stack_end.address
-            root_ptr = Pointer(Void*).new(sp).value
-            if Allocator.contains_ptr? root_ptr
-              push_gray root_ptr
-            end
-            sp += sizeof(Void*)
+      elsif @@stack_start.address <= sp <= @@stack_end.address
+        # we are currently in syscall or bootstrapping
+        conservative_scan(sp, @@stack_end.address)
+        unless Syscall.last_registers.null?
+          Serial.print "syscall: ", Pointer(Void).new(Syscall.last_registers.value.rsp), ' ', Pointer(Void).new(Multiprocessing::KERNEL_STACK_INITIAL), '\n'
+          last_rsp = Syscall.last_registers.value.rsp
+          if Multiprocessing::KERNEL_INITIAL <= last_rsp <= Multiprocessing::KERNEL_STACK_INITIAL
+            # which came from a kernel thread
+            Serial.print "thread: ", Multiprocessing::Scheduler.current_process.not_nil!.name, '\n'
+            conservative_scan(last_rsp, Multiprocessing::KERNEL_STACK_INITIAL)
           end
         end
-        return
-      elsif (process = Multiprocessing::Scheduler.current_process) && process.kernel_process? && !Syscall.locked
-        while sp < Multiprocessing::KERNEL_STACK_INITIAL
-          root_ptr = Pointer(Void*).new(sp).value
-          if Allocator.contains_ptr? root_ptr
-            push_gray root_ptr
-          end
-          sp += sizeof(Void*)
-        end
-        return
+      elsif Multiprocessing::KERNEL_INITIAL <= sp <= Multiprocessing::KERNEL_STACK_INITIAL
+        # we are currently in a kernel thread
+        conservative_scan(sp, Multiprocessing::KERNEL_STACK_INITIAL)
+      else
+        abort "unhandled stack pointer!"
       end
+    {% else %}
+      conservative_scan(sp, @@stack_end.address)
     {% end %}
-    while sp < @@stack_end.address
-      root_ptr = Pointer(Void*).new(sp).value
-      if Allocator.contains_ptr? root_ptr
-        push_gray root_ptr
-      end
-      sp += sizeof(Void*)
-    end
   end
 
   private def scan_gray_nodes
@@ -292,7 +340,7 @@ module GC
     private def scan_kernel_thread_stack(thread)
       # FIXME: uncommenting the debug prints might lead to memory corruption
       # it works if we don't have it though
-      rsp = thread.frame.not_nil!.to_unsafe.value.userrsp
+      rsp = thread.frame.not_nil!.to_unsafe.value.rsp
       return if rsp == Multiprocessing::KERNEL_STACK_INITIAL
       # virtual addresses
       page_start = Paging.aligned_floor(rsp)
@@ -320,9 +368,6 @@ module GC
     private def scan_kernel_threads
       if threads = Multiprocessing.kernel_threads
         threads.each do |thread|
-          # we will only scan threads which can be run
-          # so hopefully sleeping threads should have nothing allocated!
-          next if thread.sched_data.status != Multiprocessing::Scheduler::ProcessData::Status::Normal
           next if thread.frame.nil?
           next if thread == Multiprocessing::Scheduler.current_process
           # Serial.print "scan: ", thread.name, '\n'
