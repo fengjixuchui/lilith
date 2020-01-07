@@ -233,15 +233,17 @@ module Fat16FS
       last_cluster = 0
       begin
         while remaining_bytes > 0 && cluster < 0xFFF8
-          sector = ((cluster.to_u64 - 2) * fs.sectors_per_cluster) + fs.data_sector
-          retval = fs.device.read_sector(cluster_buffer.to_unsafe, sector, fs.sectors_per_cluster)
-          unless retval
-            Serial.print "unable to read from device, returning garbage!"
-            remaining_bytes = 0
-            break
-          end
-
           if offset_bytes <= cluster_buffer.size
+            # read the sector
+            sector = ((cluster.to_u64 - 2) * fs.sectors_per_cluster) + fs.data_sector
+            retval = fs.device.read_sector(cluster_buffer.to_unsafe, sector, fs.sectors_per_cluster)
+            unless retval
+              Serial.print "unable to read from device, returning garbage!"
+              remaining_bytes = 0
+              break
+            end
+
+            # yield the read buffer
             cur_buffer = Slice(UInt8).new(cluster_buffer.to_unsafe + offset_bytes,
               Math.min(cluster_buffer.size - offset_bytes, remaining_bytes.to_i32))
             yield cur_buffer
@@ -324,15 +326,6 @@ module Fat16FS
     end
 
     @lookup_cache : Hash(String, VFS::Node)? = nil
-
-    def open(path : Slice, process : Multiprocessing::Process? = nil) : VFS::Node?
-      return unless directory?
-      each_child do |node|
-        if node.name == path
-          return node
-        end
-      end
-    end
 
     def read(slice : Slice, offset : UInt32,
              process : Multiprocessing::Process? = nil) : Int32
@@ -499,7 +492,7 @@ module Fat16FS
       @process_allocator =
         StackAllocator.new(Pointer(Void).new(Multiprocessing::KERNEL_HEAP_INITIAL))
       @process = Multiprocessing::Process
-        .spawn_kernel("[Fat16FS]",
+        .spawn_kernel("[fat16fs]",
           ->(ptr : Void*) { ptr.as(FS).process },
           self.as(Void*),
           stack_pages: 4) do |process|
@@ -523,9 +516,6 @@ module Fat16FS
               allocator: @process_allocator) do |buffer|
               msg.respond(buffer)
             end
-            msg.unawait
-          when VFS::Message::Type::Write
-            # TODO
             msg.unawait
           when VFS::Message::Type::Spawn
             udata = msg.udata.not_nil!

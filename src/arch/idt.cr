@@ -157,14 +157,13 @@ rdx, rcx, rbx, rax : UInt64
     abort "IF is set" if (check & 0x200) != 0
   end
 
-  @@last_rsp = 0u64
-  class_property last_rsp
+  @@last_frame = Pointer(Idt::Data::Registers).null
+  class_getter last_frame
 
   @@switch_processes = false
   class_property switch_processes
 
   private def handle_unmasked(frame : Idt::Data::Registers*)
-    @@last_rsp = frame.value.userrsp
     PIC.eoi frame.value.int_no
 
     if @@irq_handlers[frame.value.int_no].pointer.null?
@@ -188,9 +187,11 @@ rdx, rcx, rbx, rax : UInt64
   def handle(frame : Idt::Data::Registers*)
     GC.needs_scan_interrupt = true
     @@status_mask = true
+    @@last_frame = frame
 
     handle_unmasked frame
 
+    @@last_frame = Pointer(Idt::Data::Registers).null
     @@status_mask = false
     GC.needs_scan_interrupt = false
   end
@@ -246,9 +247,11 @@ rdx, rcx, rbx, rax : UInt64
   def handle_exception(frame : Idt::Data::ExceptionRegisters*)
     GC.needs_scan_interrupt = true
     @@status_mask = true
+    @@last_frame = frame
 
     handle_exception_unmasked frame
 
+    @@last_frame = Pointer(Idt::Data::Registers).null
     @@status_mask = false
     GC.needs_scan_interrupt = false
   end
