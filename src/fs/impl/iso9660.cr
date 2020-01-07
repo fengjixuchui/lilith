@@ -108,18 +108,11 @@ module ISO9660FS
   end
 
   class Node < VFS::Node
+    include VFS::Child(Node)
     include VFS::Enumerable(Node)
 
     getter fs : FS
     getter name : String?
-
-    @parent : Node? = nil
-    property parent
-
-    @next_node : Node? = nil
-    property next_node
-
-    @first_child : Node? = nil
 
     def first_child
       if directory? && !@dir_populated
@@ -235,6 +228,7 @@ module ISO9660FS
     end
 
     def iso_populate_directory(allocator : StackAllocator? = nil)
+      return if @dir_populated
       @dir_populated = true
       sector = if allocator
                   Slice(UInt8).mmalloc_a 2048, allocator.not_nil!
