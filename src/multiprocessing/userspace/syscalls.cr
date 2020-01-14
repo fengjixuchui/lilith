@@ -19,14 +19,12 @@ module Syscall
     # other processes might do another syscall
     # while the current syscall is still being processed
     @@locked = true
-    GC.needs_scan_kernel_stack = true
     Idt.switch_processes = false
     Idt.enable
   end
 
   def unlock
     @@locked = false
-    GC.needs_scan_kernel_stack = false
     Idt.switch_processes = true
     Idt.disable
   end
@@ -34,11 +32,12 @@ module Syscall
   def handler(frame : Syscall::Data::Registers*)
     process = Multiprocessing::Scheduler.current_process.not_nil!
     args = Syscall::Arguments.new frame, process
+    syscall_no = args.primary_arg
 
     # syscall handlers for kernel processes
     if process.kernel_process?
       {% for syscall in %w(mmap_drv process_create_drv sleep_drv) %}
-        if args.primary_arg == SC_{{ syscall.upcase.id }}
+        if syscall_no == SC_{{ syscall.upcase.id }}
           args.primary_arg = Syscall::Handlers.{{ syscall.id }}(args).to_u64
           unlock
           return Kernel.ksyscall_sc_ret_driver(frame)
@@ -52,7 +51,7 @@ module Syscall
                          seek getcwd chdir sbrk readdir waitpid
                          ioctl mmap time sleep getenv setenv create
                          truncate waitfd remove munmap) %}
-      if args.primary_arg == SC_{{ syscall.upcase.id }}
+      if syscall_no == SC_{{ syscall.upcase.id }}
         args.primary_arg = Syscall::Handlers.{{ syscall.id }}(args).to_u64
         return
       end
